@@ -1,0 +1,9 @@
+streamlit>=1.29.0
+langgraph>=0.6.0
+langchain>=0.3.0
+langchain-openai>=0.2.0
+langchain-core>=0.3.0
+python-dotenv>=1.0.0
+langchain-google-genai
+langchain-groq
+langgraph-supervisor>=0.0.29
