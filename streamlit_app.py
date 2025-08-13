@@ -5,6 +5,7 @@ import asyncio
 import time
 import threading
 from datetime import datetime, timedelta
+from streamlit_autorefresh import st_autorefresh
 from agents import healthcare_agent_system, MOCK_USER_PROFILE, MOCK_MEDICATION_SCHEDULE
 import os
 
@@ -24,6 +25,10 @@ if "scheduled_tasks" not in st.session_state:
     st.session_state.scheduled_tasks = []
 if "last_check_time" not in st.session_state:
     st.session_state.last_check_time = datetime.now()
+if "auto_refresh_enabled" not in st.session_state:
+    st.session_state.auto_refresh_enabled = True
+if "refresh_interval" not in st.session_state:
+    st.session_state.refresh_interval = 5000  # 5 seconds in milliseconds
 
 def display_agent_thinking(agent_name, tool_name=None):
     """Display thinking status for agents."""
@@ -237,6 +242,16 @@ def stream_agent_response(user_input):
             import traceback
             st.code(traceback.format_exc())
 
+def get_time_until_next_task():
+    """Get time until the next scheduled task execution."""
+    ready_tasks, pending_tasks = check_scheduled_tasks()
+    if not pending_tasks:
+        return None
+    
+    next_task_time = min(task["execute_time"] for task in pending_tasks)
+    time_until = (next_task_time - datetime.now()).total_seconds()
+    return max(0, time_until)
+
 def main():
     """Main Streamlit application."""
     
@@ -248,6 +263,37 @@ def main():
         st.error("⚠️ Healthcare agent system not available. Please set OPENAI_API_KEY environment variable and restart the application.")
         st.info("To set the API key:\n- Windows: `set OPENAI_API_KEY=your_key_here`\n- Linux/Mac: `export OPENAI_API_KEY=your_key_here`")
         st.stop()
+    
+    # Auto-refresh setup - only refresh if we have pending tasks or recently executed tasks
+    ready_tasks, pending_tasks = check_scheduled_tasks()
+    should_auto_refresh = bool(pending_tasks) or st.session_state.get("trigger_scheduled_action", False)
+    
+    if should_auto_refresh and st.session_state.auto_refresh_enabled:
+        # Calculate optimal refresh interval based on next task
+        time_until_next = get_time_until_next_task()
+        if time_until_next is not None and time_until_next > 0:
+            # Refresh more frequently as we approach the task execution time
+            if time_until_next <= 10:  # Less than 10 seconds
+                refresh_interval = 1000  # 1 second
+            elif time_until_next <= 30:  # Less than 30 seconds
+                refresh_interval = 2000  # 2 seconds
+            else:
+                refresh_interval = st.session_state.refresh_interval  # Default 5 seconds
+        else:
+            refresh_interval = st.session_state.refresh_interval
+        
+        # Auto-refresh the app
+        count = st_autorefresh(
+            interval=refresh_interval,
+            limit=None,  # No limit on refreshes
+            key="healthcare_autorefresh"
+        )
+        
+        # Show refresh status in sidebar
+        with st.sidebar:
+            if pending_tasks:
+                st.info(f"🔄 Auto-refresh active (every {refresh_interval/1000:.1f}s)")
+                st.caption(f"Refresh count: {count}")
     
     # Sidebar with user info
     with st.sidebar:
@@ -263,6 +309,30 @@ def main():
         st.write("• **Medication Reminder**: Manages medicines") 
         st.write("• **Emergency Agent**: Handles safety issues")
         st.write("• **Communication Agent**: Sends messages")
+        
+        # Auto-refresh controls
+        st.header("🔄 Auto-Refresh Settings")
+        st.session_state.auto_refresh_enabled = st.checkbox(
+            "Enable auto-refresh", 
+            value=st.session_state.auto_refresh_enabled,
+            help="Automatically refresh to check for scheduled tasks"
+        )
+        
+        refresh_options = {
+            "1 second": 1000,
+            "2 seconds": 2000,
+            "5 seconds": 5000,
+            "10 seconds": 10000,
+            "30 seconds": 30000
+        }
+        
+        selected_interval = st.selectbox(
+            "Refresh interval",
+            options=list(refresh_options.keys()),
+            index=2,  # Default to 5 seconds
+            help="How often to check for scheduled tasks"
+        )
+        st.session_state.refresh_interval = refresh_options[selected_interval]
         
         # Quick Action Buttons
         st.header("⚡ Quick Actions")
@@ -365,12 +435,11 @@ def main():
             **⚠️ Forgot to Take Medicine**: 
             - Simulates the pre-meal scenario where John is cooking but hasn't taken his gastro medicine that should be taken 30 minutes before meals.
             
-            **🔄 Scheduler System**: 
-            The Medicine Reminder button demonstrates our intelligent scheduling system that automatically follows up on medication reminders to ensure patient compliance!
+            **🔄 Auto-Refresh System**: 
+            The Medicine Reminder button demonstrates our intelligent scheduling system that automatically follows up on medication reminders to ensure patient compliance! The page auto-refreshes to check for scheduled tasks.
             """)
         
         # Scheduler Status Display
-        ready_tasks, pending_tasks = check_scheduled_tasks()
         if pending_tasks or ready_tasks:
             st.header("⏰ Scheduled Tasks")
             
@@ -393,6 +462,15 @@ def main():
                     elapsed = (datetime.now() - task["scheduled_at"]).total_seconds()
                     progress = min(1.0, elapsed / total_wait) if total_wait > 0 else 1.0
                     st.progress(progress)
+                    
+                    # Show auto-refresh status for this task
+                    if st.session_state.auto_refresh_enabled:
+                        if seconds_left <= 10:
+                            st.success("🔄 Refreshing every 1 second (task imminent)")
+                        elif seconds_left <= 30:
+                            st.info("🔄 Refreshing every 2 seconds (task approaching)")
+                        else:
+                            st.info(f"🔄 Refreshing every {st.session_state.refresh_interval/1000:.1f} seconds")
             
             if ready_tasks:
                 st.subheader("✅ Ready to Execute")
@@ -402,24 +480,13 @@ def main():
         # Add some spacing
         st.markdown("<br>", unsafe_allow_html=True)
     
-    # Main chat interface
-    st.header("💬 Chat with DailyUX AI")
-    
-    # Auto-refresh mechanism for scheduled tasks
-    current_time = datetime.now()
-    if (current_time - st.session_state.last_check_time).total_seconds() >= 5:  # Check every 5 seconds
-        st.session_state.last_check_time = current_time
-        ready_tasks, pending_tasks = check_scheduled_tasks()
-        
-        # If we have pending tasks, auto-refresh the page
-        if pending_tasks:
-            time.sleep(1)  # Small delay
-            st.rerun()
-    
     # Check for scheduled tasks that are ready to execute
     ready_tasks, _ = check_scheduled_tasks()
     for task in ready_tasks:
         execute_scheduled_task(task)
+    
+    # Main chat interface
+    st.header("💬 Chat with DailyUX AI")
     
     # Display existing chat history first
     for message in st.session_state.messages:
